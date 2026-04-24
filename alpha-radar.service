@@ -1,0 +1,16 @@
+[Unit]
+Description=Crypto Alpha Radar
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/alpha-radar
+EnvironmentFile=/home/ubuntu/alpha-radar/.env.systemd
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/env uv run alpha-radar --env-file .env.systemd run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

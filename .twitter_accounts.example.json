@@ -1,0 +1,8 @@
+[
+  {
+    "username": "your_x_username",
+    "password": "your_x_password",
+    "email": "your_email@example.com",
+    "email_password": "your_email_password_or_app_password"
+  }
+]

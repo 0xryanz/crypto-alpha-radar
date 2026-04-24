@@ -1,0 +1,8 @@
+.env.systemd
+.twitter_accounts.json
+*.db
+__pycache__/
+*.pyc
+data/
+.venv/
+.ruff_cache
