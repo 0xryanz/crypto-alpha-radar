@@ -4,14 +4,17 @@ import argparse
 import asyncio
 import logging
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 from .adapters import TwitterTimelineAdapter
 from .config import AppConfig
 from .db import Database
+from .formatters import format_trade_result
 from .integrations import send_tg
+from .llm_client import llm_healthcheck
 from .logging_setup import setup_logging
 from .service import AlphaMonitorService
+from .trading import TradeService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,6 +58,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("check-twitter", help="Fetch once from configured Twitter accounts")
+    subparsers.add_parser("check-llm", help="Check configured LLM provider connectivity")
+
+    trade_buy = subparsers.add_parser("trade-buy", help="Place market buy using quote amount")
+    trade_buy.add_argument("--symbol", required=True, help="Token symbol, e.g. FOO")
+    trade_buy.add_argument("--usdt", required=True, type=float, help="Quote amount in USDT")
+    trade_buy.add_argument("--exchange", default="auto", help="Exchange name or auto")
+    trade_buy.add_argument("--live", action="store_true", help="Send real order (override dry-run)")
+    trade_buy.add_argument("--reason", default="manual_buy", help="Order reason tag")
+
+    trade_sell = subparsers.add_parser("trade-sell", help="Place market sell using base amount")
+    trade_sell.add_argument("--symbol", required=True, help="Token symbol, e.g. FOO")
+    trade_sell.add_argument("--amount", required=True, type=float, help="Base amount to sell")
+    trade_sell.add_argument("--exchange", default="auto", help="Exchange name or auto")
+    trade_sell.add_argument("--live", action="store_true", help="Send real order (override dry-run)")
+    trade_sell.add_argument("--reason", default="manual_sell", help="Order reason tag")
+
+    trade_orders = subparsers.add_parser("trade-orders", help="List recent trade orders")
+    trade_orders.add_argument("--limit", default=20, type=int, help="Number of rows")
 
     return parser
 
@@ -82,6 +103,78 @@ async def _check_twitter(config: AppConfig) -> int:
     return 0
 
 
+async def _check_llm(config: AppConfig) -> int:
+    logger = logging.getLogger("alpha.cli")
+    ok, message = await llm_healthcheck(config)
+    if ok:
+        logger.info(message)
+        return 0
+    logger.error(message)
+    return 1
+
+
+async def _trade_buy(config: AppConfig, symbol: str, usdt: float, exchange: str, live: bool, reason: str) -> int:
+    db = Database(config.db_path)
+    db.init_db()
+    service = TradeService(config=config, db=db)
+    result = await service.buy_symbol(
+        symbol=symbol,
+        quote_amount=usdt,
+        preferred_exchange=exchange,
+        dry_run=(not live),
+        reason=reason,
+    )
+    logger = logging.getLogger("alpha.cli")
+    logger.info("%s", format_trade_result(asdict(result)))
+    return 0 if result.ok else 1
+
+
+async def _trade_sell(
+    config: AppConfig,
+    symbol: str,
+    amount: float,
+    exchange: str,
+    live: bool,
+    reason: str,
+) -> int:
+    db = Database(config.db_path)
+    db.init_db()
+    service = TradeService(config=config, db=db)
+    result = await service.sell_symbol(
+        symbol=symbol,
+        base_amount=amount,
+        preferred_exchange=exchange,
+        dry_run=(not live),
+        reason=reason,
+    )
+    logger = logging.getLogger("alpha.cli")
+    logger.info("%s", format_trade_result(asdict(result)))
+    return 0 if result.ok else 1
+
+
+def _trade_orders(config: AppConfig, limit: int) -> int:
+    logger = logging.getLogger("alpha.cli")
+    db = Database(config.db_path)
+    db.init_db()
+    rows = db.list_trade_orders(limit=limit)
+    logger.info("recent trade orders=%s", len(rows))
+    for row in rows:
+        logger.info(
+            "id=%s status=%s side=%s pair=%s/%s exchange=%s market=%s avg=%s filled=%s cost=%s",
+            row.get("id"),
+            row.get("status"),
+            row.get("side"),
+            row.get("base_symbol"),
+            row.get("quote_symbol"),
+            row.get("exchange"),
+            row.get("market_symbol"),
+            row.get("average_price"),
+            row.get("filled_base_amount"),
+            row.get("filled_quote_amount"),
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -105,6 +198,22 @@ def main(argv: list[str] | None = None) -> int:
 
         if command == "check-twitter":
             return asyncio.run(_check_twitter(config))
+
+        if command == "check-llm":
+            return asyncio.run(_check_llm(config))
+
+        if command == "trade-buy":
+            return asyncio.run(
+                _trade_buy(config, args.symbol, args.usdt, args.exchange, args.live, args.reason)
+            )
+
+        if command == "trade-sell":
+            return asyncio.run(
+                _trade_sell(config, args.symbol, args.amount, args.exchange, args.live, args.reason)
+            )
+
+        if command == "trade-orders":
+            return _trade_orders(config, args.limit)
 
         no_startup = getattr(args, "no_startup_message", False)
         return asyncio.run(_run(config, send_startup_message=not no_startup))

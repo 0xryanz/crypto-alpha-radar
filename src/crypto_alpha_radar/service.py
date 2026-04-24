@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import asdict
 from datetime import datetime
 
 from .adapters import BinanceAnnouncementAdapter, SourceAdapter, TwitterTimelineAdapter
@@ -15,11 +16,13 @@ from .formatters import (
     format_discovery,
     format_launch,
     format_periodic,
+    format_trade_result,
 )
 from .integrations import fetch_coingecko, llm_extract, send_tg
 from .pipeline import SignalIngestionPipeline
 from .rating import rate_project
 from .timeutils import utc_now_naive
+from .trading import TradeService as TradingService
 
 
 class AlphaMonitorService:
@@ -29,6 +32,7 @@ class AlphaMonitorService:
         self.logger = logging.getLogger("alpha.service")
         self.pipeline = SignalIngestionPipeline(db=db, analyzer=OpportunityAnalyzer(config=config))
         self.adapters = self._build_adapters()
+        self.trade_service = TradingService(config=config, db=db) if config.trading_enabled else None
 
     def _build_adapters(self) -> list[SourceAdapter]:
         adapters: list[SourceAdapter] = [BinanceAnnouncementAdapter(config=self.config)]
@@ -125,6 +129,9 @@ class AlphaMonitorService:
                             if success:
                                 self.db.log_push(project["id"], "discovery", message)
                                 self.logger.info("discovery pushed: $%s [%s]", symbol, rating["tier"])
+
+                        if full_project:
+                            await self._maybe_auto_buy(full_project)
 
                     except asyncio.CancelledError:
                         raise
@@ -292,6 +299,45 @@ class AlphaMonitorService:
                         self.db.log_push(project_id, "anomaly_halve", alert)
                 break
 
+    async def _maybe_auto_buy(self, project: dict) -> None:
+        if not self.trade_service or not self.config.trading_auto_buy_enabled:
+            return
+
+        project_id = str(project.get("id") or "")
+        if not project_id:
+            return
+        if self.db.has_pushed(project_id, "auto_buy"):
+            return
+
+        tier = str(project.get("tier") or "").upper()
+        if tier not in self.config.trading_auto_buy_tiers:
+            return
+
+        symbol = str(project.get("symbol") or "").upper()
+        if not symbol:
+            return
+
+        result = await self.trade_service.buy_symbol(
+            symbol,
+            self.config.trading_auto_buy_usdt,
+            preferred_exchange="auto",
+            reason=f"auto_tier_{tier}",
+        )
+        message = format_trade_result(asdict(result))
+        pushed = await send_tg(message, self.config, silent=False)
+        if pushed:
+            self.db.log_push(project_id, "auto_buy", message)
+
+        level = self.logger.info if result.ok else self.logger.warning
+        level(
+            "auto buy %s symbol=%s tier=%s exchange=%s status=%s",
+            "succeeded" if result.ok else "failed",
+            symbol,
+            tier,
+            result.exchange,
+            result.status,
+        )
+
     async def run(self, send_startup_message: bool = True) -> None:
         self.db.init_db()
         self.logger.info("database=%s", self.db.db_path)
@@ -317,7 +363,11 @@ class AlphaMonitorService:
         enabled_sources = [adapter.source_type for adapter in self.adapters]
         self.logger.info("alpha radar started")
         self.logger.info("sources=%s", ",".join(enabled_sources))
-        self.logger.info("llm=%s", "enabled" if self.config.llm_enabled else "fallback_rules")
+        self.logger.info(
+            "llm=%s provider=%s",
+            "enabled" if self.config.llm_enabled else "fallback_rules",
+            self.config.llm_provider_normalized,
+        )
         self.logger.info("telegram=%s", "enabled" if self.config.tg_bot_token else "disabled")
 
         try:

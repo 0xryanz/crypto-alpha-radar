@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 import httpx
@@ -17,6 +16,7 @@ from .constants import (
     TWITTER_EXCLUDE_KEYWORDS,
     TWITTER_OPPORTUNITY_KEYWORDS,
 )
+from .llm_client import call_llm_json
 
 logger = logging.getLogger("alpha.integrations")
 
@@ -243,44 +243,15 @@ async def llm_extract(
 - exclude_reason: 只有当项目在其他主要CEX(如Coinbase/OKX/Bybit)上线超过3个月才算"already_tge"。如果只是在DEX或刚在币安上线，不算already_tge。CoinGecko有价格数据不代表already_tge。纯meme无叙事则"meme_only"
 """
 
-    try:
-        async with httpx.AsyncClient(timeout=30, headers=HTTP_HEADERS) as client:
-            response = await client.post(
-                f"{config.anthropic_base_url.rstrip('/')}/v1/messages",
-                headers={
-                    "x-api-key": config.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": config.anthropic_model,
-                    "max_tokens": 800,
-                    "temperature": 0,
-                    "system": system_prompt,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                },
-            )
-
-            if response.status_code != 200:
-                logger.warning("LLM call failed: %s", response.status_code)
-                return fallback
-
-            data = response.json()
-            text = ""
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    text = block.get("text", "")
-                    break
-
-            text = text.strip()
-            if text.startswith("```"):
-                lines = text.split("\n")
-                text = "\n".join(lines[1:-1])
-
-            return json.loads(text)
-    except Exception as exc:  # pragma: no cover - network dependent
-        logger.warning("LLM extract failed: %s", exc)
+    parsed = await call_llm_json(
+        config=config,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=800,
+    )
+    if not isinstance(parsed, dict):
         return fallback
+    return parsed
 
 
 async def llm_extract_tweet(
@@ -334,48 +305,20 @@ async def llm_extract_tweet(
 }}
 """
 
-    try:
-        async with httpx.AsyncClient(timeout=30, headers=HTTP_HEADERS) as client:
-            response = await client.post(
-                f"{config.anthropic_base_url.rstrip('/')}/v1/messages",
-                headers={
-                    "x-api-key": config.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": config.anthropic_model,
-                    "max_tokens": 400,
-                    "temperature": 0,
-                    "system": "你只输出JSON，不输出任何额外文本。",
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            if response.status_code != 200:
-                logger.warning("Tweet LLM call failed: %s", response.status_code)
-                return fallback
-
-            data = response.json()
-            text_out = ""
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    text_out = block.get("text", "")
-                    break
-
-            text_out = text_out.strip()
-            if text_out.startswith("```"):
-                lines = text_out.split("\n")
-                text_out = "\n".join(lines[1:-1])
-
-            parsed = json.loads(text_out)
-            parsed.setdefault("confidence", 0.0)
-            parsed.setdefault("reason", "")
-            parsed.setdefault("symbol", "")
-            parsed.setdefault("name", "")
-            parsed.setdefault("launch_time", None)
-            parsed.setdefault("exclude_reason", None)
-            parsed["is_opportunity"] = bool(parsed.get("is_opportunity", False))
-            return parsed
-    except Exception as exc:  # pragma: no cover - network dependent
-        logger.warning("Tweet LLM extract failed: %s", exc)
+    parsed = await call_llm_json(
+        config=config,
+        system_prompt="你只输出JSON，不输出任何额外文本。",
+        user_prompt=prompt,
+        max_tokens=400,
+    )
+    if not isinstance(parsed, dict):
         return fallback
+
+    parsed.setdefault("confidence", 0.0)
+    parsed.setdefault("reason", "")
+    parsed.setdefault("symbol", "")
+    parsed.setdefault("name", "")
+    parsed.setdefault("launch_time", None)
+    parsed.setdefault("exclude_reason", None)
+    parsed["is_opportunity"] = bool(parsed.get("is_opportunity", False))
+    return parsed

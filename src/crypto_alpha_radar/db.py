@@ -86,6 +86,47 @@ class SourceEvent(Base):
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AssetMarketMapping(Base):
+    __tablename__ = "asset_market_mappings"
+    __table_args__ = (
+        UniqueConstraint("base_symbol", "quote_symbol", "exchange", name="uq_asset_market_mapping"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    base_symbol: Mapped[str] = mapped_column(String, nullable=False)
+    quote_symbol: Mapped[str] = mapped_column(String, nullable=False)
+    exchange: Mapped[str] = mapped_column(String, nullable=False)
+    market_symbol: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class TradeOrder(Base):
+    __tablename__ = "trade_orders"
+    __table_args__ = (UniqueConstraint("request_id", name="uq_trade_request_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String, nullable=False)
+    side: Mapped[str] = mapped_column(String, nullable=False)
+    base_symbol: Mapped[str] = mapped_column(String, nullable=False)
+    quote_symbol: Mapped[str] = mapped_column(String, nullable=False)
+    requested_quote_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    requested_base_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exchange: Mapped[str | None] = mapped_column(String, nullable=True)
+    market_symbol: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dry_run: Mapped[int] = mapped_column(Integer, default=1)
+    order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    filled_base_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    filled_quote_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    average_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
 def _project_to_dict(project: Project) -> dict[str, Any]:
     return {
         "id": project.id,
@@ -109,6 +150,31 @@ def _project_to_dict(project: Project) -> dict[str, Any]:
         "exclude_reason": project.exclude_reason,
         "discovered_at": project.discovered_at,
         "updated_at": project.updated_at,
+    }
+
+
+def _trade_order_to_dict(order: TradeOrder) -> dict[str, Any]:
+    return {
+        "id": order.id,
+        "request_id": order.request_id,
+        "side": order.side,
+        "base_symbol": order.base_symbol,
+        "quote_symbol": order.quote_symbol,
+        "requested_quote_amount": order.requested_quote_amount,
+        "requested_base_amount": order.requested_base_amount,
+        "exchange": order.exchange,
+        "market_symbol": order.market_symbol,
+        "status": order.status,
+        "reason": order.reason,
+        "dry_run": order.dry_run,
+        "order_id": order.order_id,
+        "filled_base_amount": order.filled_base_amount,
+        "filled_quote_amount": order.filled_quote_amount,
+        "average_price": order.average_price,
+        "error_message": order.error_message,
+        "raw_json": order.raw_json,
+        "created_at": order.created_at,
+        "updated_at": order.updated_at,
     }
 
 
@@ -283,3 +349,105 @@ class Database:
             )
             session.add(snapshot)
             session.commit()
+
+    def get_market_mapping(self, base_symbol: str, quote_symbol: str, exchange: str) -> dict[str, Any] | None:
+        with self._session() as session:
+            stmt = (
+                select(AssetMarketMapping)
+                .where(AssetMarketMapping.base_symbol == base_symbol.upper())
+                .where(AssetMarketMapping.quote_symbol == quote_symbol.upper())
+                .where(AssetMarketMapping.exchange == exchange.lower())
+                .limit(1)
+            )
+            mapping = session.execute(stmt).scalar_one_or_none()
+            if mapping is None:
+                return None
+            return {
+                "id": mapping.id,
+                "base_symbol": mapping.base_symbol,
+                "quote_symbol": mapping.quote_symbol,
+                "exchange": mapping.exchange,
+                "market_symbol": mapping.market_symbol,
+                "created_at": mapping.created_at,
+                "updated_at": mapping.updated_at,
+            }
+
+    def upsert_market_mapping(self, mapping: dict[str, Any]) -> None:
+        with self._session() as session:
+            stmt = (
+                select(AssetMarketMapping)
+                .where(AssetMarketMapping.base_symbol == str(mapping["base_symbol"]).upper())
+                .where(AssetMarketMapping.quote_symbol == str(mapping["quote_symbol"]).upper())
+                .where(AssetMarketMapping.exchange == str(mapping["exchange"]).lower())
+                .limit(1)
+            )
+            existing = session.execute(stmt).scalar_one_or_none()
+            now = utc_now_iso()
+            if existing is None:
+                model = AssetMarketMapping(
+                    base_symbol=str(mapping["base_symbol"]).upper(),
+                    quote_symbol=str(mapping["quote_symbol"]).upper(),
+                    exchange=str(mapping["exchange"]).lower(),
+                    market_symbol=str(mapping["market_symbol"]),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(model)
+            else:
+                existing.market_symbol = str(mapping["market_symbol"])
+                existing.updated_at = now
+            session.commit()
+
+    def create_trade_order(self, payload: dict[str, Any]) -> int:
+        with self._session() as session:
+            now = utc_now_iso()
+            model = TradeOrder(
+                request_id=str(payload["request_id"]),
+                side=str(payload["side"]),
+                base_symbol=str(payload["base_symbol"]).upper(),
+                quote_symbol=str(payload["quote_symbol"]).upper(),
+                requested_quote_amount=payload.get("requested_quote_amount"),
+                requested_base_amount=payload.get("requested_base_amount"),
+                exchange=str(payload.get("exchange", "")) or None,
+                market_symbol=str(payload.get("market_symbol", "")) or None,
+                status=str(payload.get("status", "PENDING")),
+                reason=payload.get("reason"),
+                dry_run=int(payload.get("dry_run", 1)),
+                order_id=str(payload.get("order_id", "")) or None,
+                filled_base_amount=payload.get("filled_base_amount"),
+                filled_quote_amount=payload.get("filled_quote_amount"),
+                average_price=payload.get("average_price"),
+                error_message=payload.get("error_message"),
+                raw_json=(
+                    json.dumps(payload.get("raw_json"), ensure_ascii=False, default=str)
+                    if payload.get("raw_json") is not None
+                    else None
+                ),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(model)
+            session.commit()
+            return int(model.id)
+
+    def update_trade_order(self, order_pk: int, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        with self._session() as session:
+            model = session.get(TradeOrder, order_pk)
+            if model is None:
+                return
+
+            for key, value in fields.items():
+                if key == "raw_json" and value is not None:
+                    setattr(model, key, json.dumps(value, ensure_ascii=False, default=str))
+                elif hasattr(model, key):
+                    setattr(model, key, value)
+            model.updated_at = utc_now_iso()
+            session.commit()
+
+    def list_trade_orders(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._session() as session:
+            stmt = select(TradeOrder).order_by(TradeOrder.id.desc()).limit(max(1, int(limit)))
+            rows = session.execute(stmt).scalars().all()
+            return [_trade_order_to_dict(row) for row in rows]

@@ -40,6 +40,17 @@ def _to_list(value: str | None) -> tuple[str, ...]:
     return tuple(parts)
 
 
+def _to_upper_list(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return tuple()
+    parts = []
+    for item in value.split(","):
+        clean = item.strip().upper()
+        if clean:
+            parts.append(clean)
+    return tuple(parts)
+
+
 def _to_path(value: str | None, cwd: Path) -> Path | None:
     if not value:
         return None
@@ -81,6 +92,10 @@ class AppConfig:
     anthropic_api_key: str
     anthropic_base_url: str
     anthropic_model: str
+    llm_provider: str
+    openai_api_key: str
+    openai_base_url: str
+    openai_model: str
     announcement_poll_interval: int
     aggregation_poll_interval: int
     monitor_poll_interval: int
@@ -101,10 +116,40 @@ class AppConfig:
     twitter_login_password: str
     twitter_login_email: str
     twitter_login_email_password: str
+    trading_enabled: bool
+    trading_dry_run: bool
+    trading_exchanges: tuple[str, ...]
+    trading_default_quote: str
+    trading_max_order_usdt: float
+    trading_auto_buy_enabled: bool
+    trading_auto_buy_tiers: tuple[str, ...]
+    trading_auto_buy_usdt: float
+    trading_allowed_symbols: tuple[str, ...]
+    trading_blocked_symbols: tuple[str, ...]
+    trading_max_slippage_bps: int
+
+    @property
+    def llm_provider_normalized(self) -> str:
+        provider = self.llm_provider.strip().lower()
+        if provider in {"anthropic", "openai"}:
+            return provider
+        if self.openai_api_key and not self.anthropic_api_key:
+            return "openai"
+        return "anthropic"
 
     @property
     def llm_enabled(self) -> bool:
+        if self.llm_provider_normalized == "openai":
+            return bool(self.openai_api_key.strip())
         return bool(self.anthropic_api_key.strip())
+
+    def exchange_credentials(self, exchange: str) -> dict[str, str]:
+        prefix = exchange.strip().upper()
+        return {
+            "apiKey": os.environ.get(f"{prefix}_API_KEY", "").strip(),
+            "secret": os.environ.get(f"{prefix}_API_SECRET", "").strip(),
+            "password": os.environ.get(f"{prefix}_API_PASSWORD", "").strip(),
+        }
 
     @classmethod
     def from_env(cls, env_file: str | None = None, working_dir: Path | None = None) -> "AppConfig":
@@ -138,6 +183,10 @@ class AppConfig:
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", "").strip(),
             anthropic_base_url=os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").strip(),
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514").strip(),
+            llm_provider=os.environ.get("LLM_PROVIDER", "anthropic").strip(),
+            openai_api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
+            openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").strip(),
+            openai_model=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini").strip(),
             announcement_poll_interval=_to_int(os.environ.get("ANNOUNCEMENT_POLL_INTERVAL"), 30),
             aggregation_poll_interval=_to_int(os.environ.get("AGGREGATION_POLL_INTERVAL"), 15),
             monitor_poll_interval=_to_int(os.environ.get("MONITOR_POLL_INTERVAL"), 120),
@@ -158,4 +207,15 @@ class AppConfig:
             twitter_login_password=os.environ.get("TWITTER_LOGIN_PASSWORD", "").strip(),
             twitter_login_email=os.environ.get("TWITTER_LOGIN_EMAIL", "").strip(),
             twitter_login_email_password=os.environ.get("TWITTER_LOGIN_EMAIL_PASSWORD", "").strip(),
+            trading_enabled=_to_bool(os.environ.get("TRADING_ENABLED"), False),
+            trading_dry_run=_to_bool(os.environ.get("TRADING_DRY_RUN"), True),
+            trading_exchanges=_to_list(os.environ.get("TRADING_EXCHANGES", "binance")),
+            trading_default_quote=(os.environ.get("TRADING_DEFAULT_QUOTE", "USDT").strip().upper() or "USDT"),
+            trading_max_order_usdt=_to_float(os.environ.get("TRADING_MAX_ORDER_USDT"), 50.0),
+            trading_auto_buy_enabled=_to_bool(os.environ.get("TRADING_AUTO_BUY_ENABLED"), False),
+            trading_auto_buy_tiers=_to_upper_list(os.environ.get("TRADING_AUTO_BUY_TIERS", "S,A")),
+            trading_auto_buy_usdt=_to_float(os.environ.get("TRADING_AUTO_BUY_USDT"), 20.0),
+            trading_allowed_symbols=_to_upper_list(os.environ.get("TRADING_ALLOWED_SYMBOLS")),
+            trading_blocked_symbols=_to_upper_list(os.environ.get("TRADING_BLOCKED_SYMBOLS")),
+            trading_max_slippage_bps=_to_int(os.environ.get("TRADING_MAX_SLIPPAGE_BPS"), 80),
         )

@@ -131,3 +131,35 @@ def format_anomaly(project: dict, anomaly_type: str, price: float, change_pct: f
         f"变化: {change_pct:+.1f}%\n"
         f"当前价: {format_price(price)}"
     )
+
+
+def format_trade_result(result: dict) -> str:
+    status = result.get("status", "UNKNOWN")
+    side = str(result.get("side", "")).upper()
+    symbol = result.get("base_symbol", "")
+    quote = result.get("quote_symbol", "")
+    exchange = result.get("exchange", "")
+    market = result.get("market_symbol", "")
+
+    side_label = "买入" if side == "BUY" else "卖出"
+    lines = [
+        f"💱 <b>交易{side_label}</b> · {status}",
+        f"交易对: <b>{symbol}/{quote}</b>",
+    ]
+
+    if exchange:
+        lines.append(f"交易所: {exchange}")
+    if market:
+        lines.append(f"市场: {market}")
+
+    if result.get("filled_base_amount"):
+        lines.append(f"成交数量: {result['filled_base_amount']:.8f} {symbol}")
+    if result.get("filled_quote_amount"):
+        lines.append(f"成交金额: {result['filled_quote_amount']:.4f} {quote}")
+    if result.get("average_price"):
+        lines.append(f"成交均价: {format_price(result['average_price'])}")
+
+    message = result.get("message")
+    if message:
+        lines.append(f"说明: {message}")
+    return "\n".join(lines)
